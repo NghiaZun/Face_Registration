@@ -67,6 +67,73 @@ int catched = 0;
 /*-------------------------------------------
                   Functions
 -------------------------------------------*/
+//Add support for MiniFasNetV2
+static void vnn_ReleaseNeuralNetworkV2
+    (
+    vsi_nn_graph_t *graph
+    )
+{
+    vnn_ReleaseMinifasnetv2( graph, TRUE );
+    if (vnn_UseImagePreprocessNode())
+    {
+        vnn_ReleaseBufferImage();
+    }
+}
+
+static vsi_status vnn_PostProcessNeuralNetworkV2
+    (
+    vsi_nn_graph_t *graph
+    )
+{
+    return vnn_PostProcessMinifasnetv2( graph );
+}
+
+static vsi_status vnn_PreProcessNeuralNetworkV2
+    (
+    vsi_nn_graph_t *graph,
+    int argc,
+    char **argv,
+    bbox_t* bbox_list,
+    int bbox_count
+    )
+{
+    /*
+     * argv0:   execute file
+     * argv1:   data file
+     * argv2~n: inputs n file
+     */
+    const char *inputs[1];
+    inputs[0] = argv[2];
+    uint32_t input_num = 1;
+    vsi_status status = VSI_FAILURE;
+
+    status = vnn_PreProcessMinifasnetv2(graph, inputs, input_num, bbox_list, bbox_count);
+    return status;
+}
+
+static vsi_nn_graph_t *vnn_CreateNeuralNetworkV2
+    (
+    const char *data_file_name
+    )
+{
+    vsi_nn_graph_t *graph = NULL;
+    uint64_t tmsStart, tmsEnd, msVal, usVal;
+
+    tmsStart = get_perf_count();
+    graph = vnn_CreateMinifasnetv2( data_file_name, NULL,
+                      vnn_GetPreProcessMap(), vnn_GetPreProcessMapCount(),
+                      vnn_GetPostProcessMap(), vnn_GetPostProcessMapCount() );
+    TEST_CHECK_PTR(graph, final);
+
+    tmsEnd = get_perf_count();
+    msVal = (tmsEnd - tmsStart)/1000000;
+    usVal = (tmsEnd - tmsStart)/1000;
+    printf("Create Neural Network V2: %"VSI_UINT64_SPECIFIER"ms or %"VSI_UINT64_SPECIFIER"us\n", msVal, usVal);
+
+final:
+    return graph;
+}
+
 static void vnn_ReleaseNeuralNetwork
     (
     vsi_nn_graph_t *graph
@@ -250,16 +317,29 @@ int main
     )
 {
     vsi_status status = VSI_FAILURE;
-    vsi_nn_graph_t *graph;
-    const char *data_name = NULL;
+    vsi_status status_v2 = VSI_FAILURE;
+    vsi_nn_graph_t *graph_v1se = NULL;
+    vsi_nn_graph_t *graph_v2 = NULL;
+    const char *data_name_v1se = NULL;
+    const char *data_name_v2 = NULL;
 
     if(argc < 3)
     {
-        printf("Usage: %s data_file inputs...\n", argv[0]);
+        printf("Usage: %s data_file_v1se [data_file_v2] inputs...\n", argv[0]);
+        printf("If data_file_v2 not provided, will use default minifasnetv2.nb\n");
         return -1;
     }
 
-    data_name = (const char *)argv[1];
+    data_name_v1se = (const char *)argv[1];
+    
+    // Check if V2 model file is provided or use default
+    if(argc >= 4 && strstr(argv[2], ".nb")) {
+        data_name_v2 = (const char *)argv[2];
+        printf("Using V2 model: %s\n", data_name_v2);
+    } else {
+        data_name_v2 = "minifasnetv2.nb"; // Default V2 model file
+        printf("Using default V2 model: %s\n", data_name_v2);
+    }
 
     #define MAX_BBOX 16
     int bbox_count = (argc - 3) / 4;
@@ -272,41 +352,62 @@ int main
         bbox_list[i].h = atoi(argv[base + 3]);
     }
 
-    /* Create the neural network */
-    graph = vnn_CreateNeuralNetwork( data_name );
-    TEST_CHECK_PTR( graph, final );
+    /* Create both neural networks */
+    printf("=== Creating MiniFasNet V1SE ===\n");
+    graph_v1se = vnn_CreateNeuralNetwork( data_name_v1se );
+    TEST_CHECK_PTR( graph_v1se, final );
 
-    /* Verify graph */
-    status = vnn_VerifyGraph( graph );
+    printf("=== Creating MiniFasNet V2 ===\n");
+    graph_v2 = vnn_CreateNeuralNetworkV2( data_name_v2 );
+    TEST_CHECK_PTR( graph_v2, final );
+
+    /* Verify both graphs */
+    printf("=== Verifying V1SE Graph ===\n");
+    status = vnn_VerifyGraph( graph_v1se );
     TEST_CHECK_STATUS( status, final);
 
-    /* Pre process the image data */
-    status = vnn_PreProcessNeuralNetwork( graph, argc, argv, bbox_list, bbox_count);
+    printf("=== Verifying V2 Graph ===\n");
+    status_v2 = vnn_VerifyGraph( graph_v2 );
+    TEST_CHECK_STATUS( status_v2, final);
+
+    /* Pre process the image data for both models */
+    printf("=== Pre-processing V1SE ===\n");
+    status = vnn_PreProcessNeuralNetwork( graph_v1se, argc, argv, bbox_list, bbox_count);
     TEST_CHECK_STATUS( status, final );
 
+    printf("=== Pre-processing V2 ===\n");
+    status_v2 = vnn_PreProcessNeuralNetworkV2( graph_v2, argc, argv, bbox_list, bbox_count);
+    TEST_CHECK_STATUS( status_v2, final );
 
-
-    /* Process graph */
-    status = vnn_ProcessGraph( graph );
+    /* Process both graphs */
+    printf("=== Processing V1SE Graph ===\n");
+    status = vnn_ProcessGraph( graph_v1se );
     TEST_CHECK_STATUS( status, final );
+
+    printf("=== Processing V2 Graph ===\n");
+    status_v2 = vnn_ProcessGraph( graph_v2 );
+    TEST_CHECK_STATUS( status_v2, final );
 
     if(VNN_APP_DEBUG)
     {
         /* Dump all node outputs */
-        vsi_nn_DumpGraphNodeOutputs(graph, "./network_dump", NULL, 0, TRUE, 0);
+        vsi_nn_DumpGraphNodeOutputs(graph_v1se, "./network_dump_v1se", NULL, 0, TRUE, 0);
+        vsi_nn_DumpGraphNodeOutputs(graph_v2, "./network_dump_v2", NULL, 0, TRUE, 0);
     }
 
-    /* Post process output data */
-    status = vnn_PostProcessNeuralNetwork( graph );
+    /* Ensemble post processing */
+    printf("=== Ensemble Post-processing ===\n");
+    status = vnn_PostProcessAntiSpoofing( graph_v1se, graph_v2 );
     TEST_CHECK_STATUS( status, final );
 
-    // Sau khi chạy graph và lấy output tensor
-    vsi_nn_tensor_t* output_tensor = vsi_nn_GetTensor(graph, graph->output.tensors[0]);
+    // Get ensemble output tensor for further use
+    vsi_nn_tensor_t* output_tensor_v1se = vsi_nn_GetTensor(graph_v1se, graph_v1se->output.tensors[0]);
+    vsi_nn_tensor_t* output_tensor_v2 = vsi_nn_GetTensor(graph_v2, graph_v2->output.tensors[0]);
     vsi_size_t out_size = 0;
 
-
 final:
-    vnn_ReleaseNeuralNetwork( graph );
+    if(graph_v1se) vnn_ReleaseNeuralNetwork( graph_v1se );
+    if(graph_v2) vnn_ReleaseNeuralNetworkV2( graph_v2 );
     fflush(stdout);
     fflush(stderr);
     return status;

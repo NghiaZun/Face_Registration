@@ -962,6 +962,36 @@ final:
     return status;
 }
 
+vsi_status vnn_PreProcessMinifasnetv2
+    (
+    vsi_nn_graph_t *graph,
+    const char **inputs,
+    uint32_t input_num,
+    bbox_t* bbox_list,
+    int bbox_count
+    )
+{
+    uint32_t i;
+    vsi_status status;
+    status = VSI_FAILURE;
+    _load_input_meta();
+    if(input_num != graph->input.num)
+    {
+        printf("Graph need %u inputs, but enter %u inputs!!!\n",
+               graph->input.num, input_num);
+        return status;
+    }
+    for(i = 0; i < input_num; i++)
+    {
+        status = _handle_multiple_inputs(graph, i, inputs[i], bbox_list, bbox_count);
+        TEST_CHECK_STATUS(status, final);
+    }
+
+    status = VSI_SUCCESS;
+final:
+    return status;
+}
+
 vsi_size_t vnn_LoadFP32DataFromTextFile
     (
     const char * fname,

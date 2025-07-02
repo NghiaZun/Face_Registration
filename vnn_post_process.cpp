@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "vsi_nn_pub.h"
 
@@ -29,8 +30,53 @@ const static vsi_nn_postprocess_map_element_t* postprocess_map = NULL;
 /*-------------------------------------------
                   Functions
 -------------------------------------------*/
-float* get_output_probabilities_1SE(vsi_nn_graph_t *graph, vsi_nn_tensor_t *tensor, vsi_size_t* out_size);
-void softmax(const float* input, float* output, vsi_size_t len);
+void softmax(const float* input, float* output, vsi_size_t len)
+{
+    float max_val = input[0];
+    for (vsi_size_t i = 1; i < len; ++i)
+        if (input[i] > max_val) max_val = input[i];
+
+    float sum = 0.0f;
+    for (vsi_size_t i = 0; i < len; ++i)
+    {
+        output[i] = expf(input[i] - max_val);
+        sum += output[i];
+    }
+    for (vsi_size_t i = 0; i < len; ++i)
+    {
+        output[i] /= sum;
+    }
+}
+
+float* get_output_probabilities(vsi_nn_graph_t *graph, vsi_nn_tensor_t *tensor, vsi_size_t* out_size)
+{
+    vsi_size_t i, sz, stride;
+    float *buffer = NULL;
+    uint8_t *tensor_data = NULL;
+
+    sz = 1;
+    for(i = 0; i < tensor->attr.dim_num; i++)
+    {
+        sz *= tensor->attr.size[i];
+    }
+    *out_size = sz;
+
+    stride = (vsi_size_t)vsi_nn_TypeGetBytes(tensor->attr.dtype.vx_type);
+    if(stride == 0)
+    {
+        stride = 1;
+    }
+    tensor_data = (uint8_t *)vsi_nn_ConvertTensorToData(graph, tensor);
+    buffer = (float *)malloc(sizeof(float) * sz);
+
+    for(i = 0; i < sz; i++)
+    {
+        vsi_nn_DtypeToFloat32(&tensor_data[stride * i], &buffer[i], &tensor->attr.dtype);
+    }
+
+    if(tensor_data) vsi_nn_Free(tensor_data);
+    return buffer; // bạn phải free(buffer) ở bước sau khi dùng xong
+}
 
 static void save_output_data(vsi_nn_graph_t *graph)
 {
@@ -173,63 +219,111 @@ final:
     return status;
 }
 
-vsi_status vnn_PostProcessMinifasnetv1se
+vsi_status vnn_PostProcessAntiSpoofing
     (
-    vsi_nn_graph_t *graph
+    vsi_nn_graph_t *graph_v1se,
+    vsi_nn_graph_t *graph_v2
     )
 {
     vsi_status status = VSI_FAILURE;
-    vsi_nn_tensor_t *tensor;
-    float *data = NULL;
-    float *probs = NULL;
-    vsi_size_t sz = 1, i;
+    vsi_nn_tensor_t *tensor_v1se = NULL, *tensor_v2 = NULL;
+    float *data_v1se = NULL, *data_v2 = NULL;
+    float *ensemble_probs = NULL;
+    vsi_size_t sz_v1se = 1, sz_v2 = 1, i;
 
-    printf("[%s()]::[%d] \n", __FUNCTION__, __LINE__);
+    printf("[%s()]::[%d] Ensemble post-processing\n", __FUNCTION__, __LINE__);
 
-    /* Show the top5 result */
-    //status = show_top5(graph, vsi_nn_GetTensor(graph, graph->output.tensors[0]));
-    //TEST_CHECK_STATUS(status, final);
-
-    /* Save all output tensor data to txt file */
-    //save_output_data(graph);
-
-    // 1. Lấy output tensor đầu tiên
-    tensor = vsi_nn_GetTensor(graph, graph->output.tensors[0]);
-    if (!tensor) {
-        printf("Cannot get output tensor!\n");
+    // 1. Lấy output tensor từ V1SE
+    tensor_v1se = vsi_nn_GetTensor(graph_v1se, graph_v1se->output.tensors[0]);
+    if (!tensor_v1se) {
+        printf("Cannot get V1SE output tensor!\n");
         goto final;
     }
 
-    // 2. Lấy số lượng phần tử output
-    for(i = 0; i < tensor->attr.dim_num; i++)
-    {
-        sz *= tensor->attr.size[i];
-    }
-
-    // 3. Lấy dữ liệu float32 từ tensor
-    data = get_output_probabilities_1SE(graph, tensor, &sz);
-    if (!data) {
-        printf("Cannot get output data!\n");
+    // 2. Lấy output tensor từ V2
+    tensor_v2 = vsi_nn_GetTensor(graph_v2, graph_v2->output.tensors[0]);
+    if (!tensor_v2) {
+        printf("Cannot get V2 output tensor!\n");
         goto final;
     }
 
-    // 4. Tính softmax
-    probs = (float*)malloc(sizeof(float) * sz);
-    if (!probs) goto final;
-    softmax(data, probs, sz);
-
-    // 5. In ra list xác suất
-    printf("Softmax output:\n");
-    for(i = 0; i < sz; ++i)
+    // 3. Tính số lượng phần tử cho V1SE
+    for(i = 0; i < tensor_v1se->attr.dim_num; i++)
     {
-        printf("  [%u]: %f\n", i, probs[i]);
+        sz_v1se *= tensor_v1se->attr.size[i];
     }
+
+    // 4. Tính số lượng phần tử cho V2
+    for(i = 0; i < tensor_v2->attr.dim_num; i++)
+    {
+        sz_v2 *= tensor_v2->attr.size[i];
+    }
+
+    // 5. Kiểm tra kích thước output có khớp nhau không
+    if (sz_v1se != sz_v2) {
+        printf("Error: V1SE output size (%u) != V2 output size (%u)\n", sz_v1se, sz_v2);
+        goto final;
+    }
+
+    // 6. Lấy dữ liệu raw từ cả 2 model (chưa softmax)
+    data_v1se = get_output_probabilities(graph_v1se, tensor_v1se, &sz_v1se);
+    if (!data_v1se) {
+        printf("Cannot get V1SE output data!\n");
+        goto final;
+    }
+
+    data_v2 = get_output_probabilities(graph_v2, tensor_v2, &sz_v2);
+    if (!data_v2) {
+        printf("Cannot get V2 output data!\n");
+        goto final;
+    }
+
+    // 7. Tính trung bình ensemble: (logits_v1se + logits_v2) / 2
+    ensemble_probs = (float*)malloc(sizeof(float) * sz_v1se);
+    if (!ensemble_probs) goto final;
+
+    for(i = 0; i < sz_v1se; i++)
+    {
+        ensemble_probs[i] = (data_v1se[i] + data_v2[i]) / 2.0f;
+    }
+
+    // 8. Áp dụng softmax lên ensemble logits
+    float *final_probs = (float*)malloc(sizeof(float) * sz_v1se);
+    if (!final_probs) {
+        free(ensemble_probs);
+        goto final;
+    }
+    
+    softmax(ensemble_probs, final_probs, sz_v1se);
+
+    // 9. In ra kết quả ensemble
+    printf("=== ENSEMBLE RESULTS ===\n");
+    for(i = 0; i < sz_v1se; i++)
+    {
+        printf("Class [%u]: V1SE=%.6f, V2=%.6f, Ensemble=%.6f\n", 
+               i, data_v1se[i], data_v2[i], final_probs[i]);
+    }
+
+    // 10. Tìm class có xác suất cao nhất
+    float max_prob = final_probs[0];
+    vsi_size_t max_class = 0;
+    for(i = 1; i < sz_v1se; i++)
+    {
+        if (final_probs[i] > max_prob) {
+            max_prob = final_probs[i];
+            max_class = i;
+        }
+    }
+
+    printf("Final Prediction: Class %u with probability %.6f\n", max_class, max_prob);
 
     status = VSI_SUCCESS;
+    free(final_probs);
 
 final:
-    if(data) free(data);
-    if(probs) free(probs);
+    if(data_v1se) free(data_v1se);
+    if(data_v2) free(data_v2);
+    if(ensemble_probs) free(ensemble_probs);
     return status;
 }
 
@@ -244,52 +338,4 @@ uint32_t vnn_GetPostProcessMapCount()
        return 0;
     else
         return sizeof(postprocess_map) / sizeof(vsi_nn_postprocess_map_element_t);
-}
-
-void softmax(const float* input, float* output, vsi_size_t len)
-{
-    float max_val = input[0];
-    for (vsi_size_t i = 1; i < len; ++i)
-        if (input[i] > max_val) max_val = input[i];
-
-    float sum = 0.0f;
-    for (vsi_size_t i = 0; i < len; ++i)
-    {
-        output[i] = expf(input[i] - max_val);
-        sum += output[i];
-    }
-    for (vsi_size_t i = 0; i < len; ++i)
-    {
-        output[i] /= sum;
-    }
-}
-
-float* get_output_probabilities_1SE(vsi_nn_graph_t *graph, vsi_nn_tensor_t *tensor, vsi_size_t* out_size)
-{
-    vsi_size_t i, sz, stride;
-    float *buffer = NULL;
-    uint8_t *tensor_data = NULL;
-
-    sz = 1;
-    for(i = 0; i < tensor->attr.dim_num; i++)
-    {
-        sz *= tensor->attr.size[i];
-    }
-    *out_size = sz;
-
-    stride = (vsi_size_t)vsi_nn_TypeGetBytes(tensor->attr.dtype.vx_type);
-    if(stride == 0)
-    {
-        stride = 1;
-    }
-    tensor_data = (uint8_t *)vsi_nn_ConvertTensorToData(graph, tensor);
-    buffer = (float *)malloc(sizeof(float) * sz);
-
-    for(i = 0; i < sz; i++)
-    {
-        vsi_nn_DtypeToFloat32(&tensor_data[stride * i], &buffer[i], &tensor->attr.dtype);
-    }
-
-    if(tensor_data) vsi_nn_Free(tensor_data);
-    return buffer; // bạn phải free(buffer) ở bước sau khi dùng xong
 }

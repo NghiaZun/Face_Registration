@@ -56,6 +56,15 @@ vsi_status vnn_PreProcessMinifasnetv1se
     int bbox_count
     );
 
+vsi_status vnn_PreProcessMinifasnetv2
+    (
+    vsi_nn_graph_t *graph,
+    const char **inputs,
+    uint32_t input_num,
+    bbox_t* bbox_list,
+    int bbox_count
+    );
+
 vsi_bool vnn_UseImagePreprocessNode();
 
 void vnn_ReleaseBufferImage();
