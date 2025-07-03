@@ -7,6 +7,8 @@
 #ifndef _VNN_POST_PROCESS_H_
 #define _VNN_POST_PROCESS_H_
 
+vsi_status vnn_PostProcessMinifasnetv2(vsi_nn_graph_t *graph);
+vsi_status vnn_PostProcessMinifasnetv1se(vsi_nn_graph_t *graph);
 
 // Ensemble post-processing function
 vsi_status vnn_PostProcessAntiSpoofing(

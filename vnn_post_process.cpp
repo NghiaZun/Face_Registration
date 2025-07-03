@@ -15,7 +15,7 @@
 #include "vsi_nn_pub.h"
 
 #include "vnn_global.h"
-#include "vnn_post_process.h"
+#include "vnn_post_process.hpp"
 
 #define _BASETSD_H
 
@@ -45,81 +45,6 @@ void softmax(const float* input, float* output, vsi_size_t len)
     for (vsi_size_t i = 0; i < len; ++i)
     {
         output[i] /= sum;
-    }
-}
-
-float* get_output_probabilities(vsi_nn_graph_t *graph, vsi_nn_tensor_t *tensor, vsi_size_t* out_size)
-{
-    vsi_size_t i, sz, stride;
-    float *buffer = NULL;
-    uint8_t *tensor_data = NULL;
-
-    sz = 1;
-    for(i = 0; i < tensor->attr.dim_num; i++)
-    {
-        sz *= tensor->attr.size[i];
-    }
-    *out_size = sz;
-
-    stride = (vsi_size_t)vsi_nn_TypeGetBytes(tensor->attr.dtype.vx_type);
-    if(stride == 0)
-    {
-        stride = 1;
-    }
-    tensor_data = (uint8_t *)vsi_nn_ConvertTensorToData(graph, tensor);
-    buffer = (float *)malloc(sizeof(float) * sz);
-
-    for(i = 0; i < sz; i++)
-    {
-        vsi_nn_DtypeToFloat32(&tensor_data[stride * i], &buffer[i], &tensor->attr.dtype);
-    }
-
-    if(tensor_data) vsi_nn_Free(tensor_data);
-    return buffer; // bạn phải free(buffer) ở bước sau khi dùng xong
-}
-
-static void save_output_data(vsi_nn_graph_t *graph)
-{
-    uint32_t i;
-#define _DUMP_FILE_LENGTH 1028
-#define _DUMP_SHAPE_LENGTH 128
-    char filename[_DUMP_FILE_LENGTH] = {0}, shape[_DUMP_SHAPE_LENGTH] = {0};
-    vsi_nn_tensor_t *tensor;
-
-    for(i = 0; i < graph->output.num; i++)
-    {
-        tensor = vsi_nn_GetTensor(graph, graph->output.tensors[i]);
-        vsi_nn_ShapeToString( tensor->attr.size, tensor->attr.dim_num,
-            shape, _DUMP_SHAPE_LENGTH, FALSE );
-        snprintf( filename, _DUMP_FILE_LENGTH, "output%u_%s.txt", i, shape );
-        {
-            char *p = NULL;
-            p = getenv( "VSI_SAVE_FILE_TYPE" );
-            if( ( p == NULL ) || ( *p == '0' ) )
-            {
-                vsi_nn_SaveTensorToTextByFp32( graph, tensor, filename, NULL );
-            }
-            else if( *p == '1' )
-            {
-                vsi_nn_SaveTensorToText( graph, tensor, filename, NULL );
-            }
-            else if( *p == '2' )
-            {
-                snprintf( filename, _DUMP_FILE_LENGTH, "output%u_%s.dat", i, shape );
-                vsi_nn_SaveTensorToBinary( graph, tensor, filename );
-            }
-            else if(*p == '3')
-            {
-                vsi_nn_SaveTensorToTextByFp32(graph, tensor, filename, NULL);
-                snprintf(filename, _DUMP_FILE_LENGTH, "output%u_%s.dat", i, shape);
-                vsi_nn_SaveTensorToBinary(graph, tensor, filename);
-            }
-            else
-            {
-                vsi_nn_SaveTensorToTextByFp32( graph, tensor, filename, NULL );
-            }
-        }
-
     }
 }
 
@@ -162,6 +87,36 @@ static vsi_bool get_top
     }
 
     return TRUE;
+}
+
+float* get_output_probabilities(vsi_nn_graph_t *graph, vsi_nn_tensor_t *tensor, vsi_size_t* out_size)
+{
+    vsi_size_t i, sz, stride;
+    float *buffer = NULL;
+    uint8_t *tensor_data = NULL;
+
+    sz = 1;
+    for(i = 0; i < tensor->attr.dim_num; i++)
+    {
+        sz *= tensor->attr.size[i];
+    }
+    *out_size = sz;
+
+    stride = (vsi_size_t)vsi_nn_TypeGetBytes(tensor->attr.dtype.vx_type);
+    if(stride == 0)
+    {
+        stride = 1;
+    }
+    tensor_data = (uint8_t *)vsi_nn_ConvertTensorToData(graph, tensor);
+    buffer = (float *)malloc(sizeof(float) * sz);
+
+    for(i = 0; i < sz; i++)
+    {
+        vsi_nn_DtypeToFloat32(&tensor_data[stride * i], &buffer[i], &tensor->attr.dtype);
+    }
+
+    if(tensor_data) vsi_nn_Free(tensor_data);
+    return buffer; // bạn phải free(buffer) ở bước sau khi dùng xong
 }
 
 static vsi_status show_top5
@@ -219,6 +174,126 @@ final:
     return status;
 }
 
+vsi_status vnn_PostProcessMinifasnetv2(vsi_nn_graph_t *graph)
+{
+    vsi_status status = VSI_FAILURE;
+    vsi_nn_tensor_t *output_tensor = NULL;
+    float *probs = NULL;
+    vsi_size_t sz = 1, i;
+    if (!graph) return status;
+
+    output_tensor = vsi_nn_GetTensor(graph, graph->output.tensors[0]);
+    if (!output_tensor) return status;
+
+    for (i = 0; i < output_tensor->attr.dim_num; ++i)
+        sz *= output_tensor->attr.size[i];
+
+    probs = get_output_probabilities(graph, output_tensor, &sz);
+    if (!probs) return status;
+
+    float *softmax_probs = (float*)malloc(sizeof(float) * sz);
+    if (!softmax_probs) {
+        free(probs);
+        return status;
+    }
+    softmax(probs, softmax_probs, sz);
+
+    printf("MiniFasNetV2 Output (softmax):\n");
+    for (i = 0; i < sz; ++i)
+        printf("Class %u: %.6f\n", (unsigned)i, softmax_probs[i]);
+
+    // Optionally show top-5
+    show_top5(graph, output_tensor);
+
+    free(probs);
+    free(softmax_probs);
+    status = VSI_SUCCESS;
+    return status;
+}
+
+vsi_status vnn_PostProcessMinifasnetv1se(vsi_nn_graph_t *graph)
+{
+    vsi_status status = VSI_FAILURE;
+    vsi_nn_tensor_t *output_tensor = NULL;
+    float *probs = NULL;
+    vsi_size_t sz = 1, i;
+    if (!graph) return status;
+
+    output_tensor = vsi_nn_GetTensor(graph, graph->output.tensors[0]);
+    if (!output_tensor) return status;
+
+    for (i = 0; i < output_tensor->attr.dim_num; ++i)
+        sz *= output_tensor->attr.size[i];
+
+    probs = get_output_probabilities(graph, output_tensor, &sz);
+    if (!probs) return status;
+
+    float *softmax_probs = (float*)malloc(sizeof(float) * sz);
+    if (!softmax_probs) {
+        free(probs);
+        return status;
+    }
+    softmax(probs, softmax_probs, sz);
+
+    printf("MiniFasNetV1SE Output (softmax):\n");
+    for (i = 0; i < sz; ++i)
+        printf("Class %u: %.6f\n", (unsigned)i, softmax_probs[i]);
+
+    // Optionally show top-5
+    show_top5(graph, output_tensor);
+
+    free(probs);
+    free(softmax_probs);
+    status = VSI_SUCCESS;
+    return status;
+}
+
+static void save_output_data(vsi_nn_graph_t *graph)
+{
+    uint32_t i;
+#define _DUMP_FILE_LENGTH 1028
+#define _DUMP_SHAPE_LENGTH 128
+    char filename[_DUMP_FILE_LENGTH] = {0}, shape[_DUMP_SHAPE_LENGTH] = {0};
+    vsi_nn_tensor_t *tensor;
+
+    for(i = 0; i < graph->output.num; i++)
+    {
+        tensor = vsi_nn_GetTensor(graph, graph->output.tensors[i]);
+        vsi_nn_ShapeToString( tensor->attr.size, tensor->attr.dim_num,
+            shape, _DUMP_SHAPE_LENGTH, FALSE );
+        snprintf( filename, _DUMP_FILE_LENGTH, "output%u_%s.txt", i, shape );
+        {
+            char *p = NULL;
+            p = getenv( "VSI_SAVE_FILE_TYPE" );
+            if( ( p == NULL ) || ( *p == '0' ) )
+            {
+                vsi_nn_SaveTensorToTextByFp32( graph, tensor, filename, NULL );
+            }
+            else if( *p == '1' )
+            {
+                vsi_nn_SaveTensorToText( graph, tensor, filename, NULL );
+            }
+            else if( *p == '2' )
+            {
+                snprintf( filename, _DUMP_FILE_LENGTH, "output%u_%s.dat", i, shape );
+                vsi_nn_SaveTensorToBinary( graph, tensor, filename );
+            }
+            else if(*p == '3')
+            {
+                vsi_nn_SaveTensorToTextByFp32(graph, tensor, filename, NULL);
+                snprintf(filename, _DUMP_FILE_LENGTH, "output%u_%s.dat", i, shape);
+                vsi_nn_SaveTensorToBinary(graph, tensor, filename);
+            }
+            else
+            {
+                vsi_nn_SaveTensorToTextByFp32( graph, tensor, filename, NULL );
+            }
+        }
+
+    }
+}
+
+
 vsi_status vnn_PostProcessAntiSpoofing
     (
     vsi_nn_graph_t *graph_v1se,
@@ -229,7 +304,10 @@ vsi_status vnn_PostProcessAntiSpoofing
     vsi_nn_tensor_t *tensor_v1se = NULL, *tensor_v2 = NULL;
     float *data_v1se = NULL, *data_v2 = NULL;
     float *ensemble_probs = NULL;
+    float *final_probs = NULL;      // <-- move declaration here
     vsi_size_t sz_v1se = 1, sz_v2 = 1, i;
+    float max_prob = 0.0f;          // <-- move declaration here
+    vsi_size_t max_class = 0;       // <-- move declaration here
 
     printf("[%s()]::[%d] Ensemble post-processing\n", __FUNCTION__, __LINE__);
 
@@ -288,9 +366,8 @@ vsi_status vnn_PostProcessAntiSpoofing
     }
 
     // 8. Áp dụng softmax lên ensemble logits
-    float *final_probs = (float*)malloc(sizeof(float) * sz_v1se);
+    final_probs = (float*)malloc(sizeof(float) * sz_v1se);
     if (!final_probs) {
-        free(ensemble_probs);
         goto final;
     }
     
@@ -305,8 +382,8 @@ vsi_status vnn_PostProcessAntiSpoofing
     }
 
     // 10. Tìm class có xác suất cao nhất
-    float max_prob = final_probs[0];
-    vsi_size_t max_class = 0;
+    max_prob = final_probs[0];
+    max_class = 0;
     for(i = 1; i < sz_v1se; i++)
     {
         if (final_probs[i] > max_prob) {
@@ -318,9 +395,9 @@ vsi_status vnn_PostProcessAntiSpoofing
     printf("Final Prediction: Class %u with probability %.6f\n", max_class, max_prob);
 
     status = VSI_SUCCESS;
-    free(final_probs);
 
 final:
+    if(final_probs) free(final_probs);
     if(data_v1se) free(data_v1se);
     if(data_v2) free(data_v2);
     if(ensemble_probs) free(ensemble_probs);

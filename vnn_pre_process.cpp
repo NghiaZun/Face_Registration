@@ -14,7 +14,7 @@
 #include "jpeglib.h"
 #include "vsi_nn_pub.h"
 #include "vnn_global.h"
-#include "vnn_pre_process.h"
+#include "vnn_pre_process.hpp"
 
 #define _BASETSD_H
 
@@ -121,9 +121,14 @@ static vsi_enum _get_file_type(const char *file_name)
     char buff[32] = {0};
 
     ptr = strrchr(file_name, sep);
+    if (!ptr) {
+        return NN_FILE_NONE;
+    }
     pos = ptr - file_name;
     n = strlen(file_name) - (pos + 1);
+    if (n >= sizeof(buff)) n = sizeof(buff) - 1;
     strncpy(buff, file_name+(pos+1), n);
+    buff[n] = '\0';
 
     if(strcmp(buff, "jpg") == 0
         || strcmp(buff, "jpeg") == 0
@@ -135,7 +140,7 @@ static vsi_enum _get_file_type(const char *file_name)
     else if(strcmp(buff, "tensor") == 0
         || strcmp(buff, "txt") == 0)
     {
-        char *qnt_suffix = ".qnt.tensor";
+        const char *qnt_suffix = ".qnt.tensor";
         ptr = strstr(file_name, qnt_suffix);
         if(ptr && strlen(qnt_suffix))
         {
@@ -686,12 +691,14 @@ static uint8_t *_get_jpeg_data(
     vnn_input_meta_t *meta,
     const char *filename,
     const bbox_t* bbox_list,
-    int bbox_count
+    int bbox_count,
+    float scale
 )
 {
     uint8_t *bmpData = NULL, *crop = NULL, *resized = NULL, *usedData = NULL, *data = NULL;
     float *fdata = NULL;
-    int w, h, c;
+    int w = 0, h = 0, c = 0;
+    int model_w = 0, model_h = 0, model_c = 0; // <-- move declarations here
     uint32_t i;
     vsi_bool use_image_process = vnn_UseImagePreprocessNode();
 
@@ -702,17 +709,17 @@ static uint8_t *_get_jpeg_data(
     printf("=== DEBUG IMAGE PROCESSING ===\n");
     printf("Input image size: %d x %d x %d\n", w, h, c);
 
-    int model_w = tensor->attr.size[0];
-    int model_h = tensor->attr.size[1];
-    int model_c = tensor->attr.size[2];
+    model_w = tensor->attr.size[0];
+    model_h = tensor->attr.size[1];
+    model_c = tensor->attr.size[2];
     printf("Target tensor size: %d x %d x %d\n", model_w, model_h, model_c);
 
     if (bbox_list && bbox_count > 0)
     {
         printf("BBox input: x=%d y=%d w=%d h=%d\n", bbox_list[0].x, bbox_list[0].y, bbox_list[0].w, bbox_list[0].h);
         bbox_t scaled_bbox;
-        scale_bbox(&bbox_list[0], &scaled_bbox, 4.0f, w, h);
-        printf("BBox after scale (4.0x): x=%d y=%d w=%d h=%d\n", scaled_bbox.x, scaled_bbox.y, scaled_bbox.w, scaled_bbox.h);
+        scale_bbox(&bbox_list[0], &scaled_bbox, scale, w, h);
+        printf("BBox after scale: x=%d y=%d w=%d h=%d\n", scaled_bbox.x, scaled_bbox.y, scaled_bbox.w, scaled_bbox.h);
         crop = crop_image(bmpData, w, h, c, &scaled_bbox);
         free(bmpData);
         if (!crop) goto final;
@@ -840,6 +847,9 @@ static vsi_status _handle_multiple_inputs
     char dumpInput[128];
     char *p1 = NULL;
 
+    float scale = 2.7f; // mặc định cho model 2
+    if (idx == 0) scale = 4.0f; // model 1 (V1SE) dùng scale 2.7
+
     status = VSI_FAILURE;
     data = NULL;
     tensor = NULL;
@@ -850,7 +860,7 @@ static vsi_status _handle_multiple_inputs
     switch(fileType)
     {
     case NN_FILE_JPG:
-        data = _get_jpeg_data(tensor, &meta, input_file, bbox_list, bbox_count);
+        data = _get_jpeg_data(tensor, &meta, input_file, bbox_list, bbox_count, scale);
         TEST_CHECK_PTR(data, final);
         break;
     case NN_FILE_TENSOR:

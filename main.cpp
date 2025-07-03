@@ -29,7 +29,7 @@ extern "C" {
 #include "vnn_minifasnetv2.h"
 #include "vnn_minifasnetv1se.h"
 }
-
+#include <vector>
 #include "vnn_pre_process.hpp"
 #include "vnn_post_process.hpp"
 #include <opencv2/opencv.hpp>
@@ -56,7 +56,7 @@ std::vector<cv::Mat> croppedimg;
 
 const int FRC_input_size = 160;
 const int FRC_feature_size = 128;
-const float OPT_thrshold=0.7; //建議使用固定的thresh
+const float OPT_thrshold=0.7; 
 int catched = 0;
 
 #define DETECT_DEBUG 1
@@ -67,6 +67,7 @@ int catched = 0;
 /*-------------------------------------------
                   Functions
 -------------------------------------------*/
+static uint64_t get_perf_count();
 //Add support for MiniFasNetV2
 static void vnn_ReleaseNeuralNetworkV2
     (
@@ -103,7 +104,7 @@ static vsi_status vnn_PreProcessNeuralNetworkV2
      * argv2~n: inputs n file
      */
     const char *inputs[1];
-    inputs[0] = argv[2];
+    inputs[0] = argv[3];
     uint32_t input_num = 1;
     vsi_status status = VSI_FAILURE;
 
@@ -128,8 +129,7 @@ static vsi_nn_graph_t *vnn_CreateNeuralNetworkV2
     tmsEnd = get_perf_count();
     msVal = (tmsEnd - tmsStart)/1000000;
     usVal = (tmsEnd - tmsStart)/1000;
-    printf("Create Neural Network V2: %"VSI_UINT64_SPECIFIER"ms or %"VSI_UINT64_SPECIFIER"us\n", msVal, usVal);
-
+    printf("Create Neural Network V2: % " VSI_UINT64_SPECIFIER "ms or % " VSI_UINT64_SPECIFIER "us\n", msVal, usVal);
 final:
     return graph;
 }
@@ -190,7 +190,7 @@ static vsi_status vnn_VerifyGraph
     tmsEnd = get_perf_count();
     msVal = (tmsEnd - tmsStart)/1000000;
     usVal = (tmsEnd - tmsStart)/1000;
-    printf("Verify Graph: %"VSI_UINT64_SPECIFIER"ms or %"VSI_UINT64_SPECIFIER"us\n", msVal, usVal);
+    printf("Verify Graph: % " VSI_UINT64_SPECIFIER"ms or %"VSI_UINT64_SPECIFIER"us\n", msVal, usVal);
 
 final:
     return status;
@@ -276,7 +276,7 @@ static vsi_status vnn_PreProcessNeuralNetwork
      * argv2~n: inputs n file
      */
     const char *inputs[1];
-    inputs[0] = argv[2];
+    inputs[0] = argv[3];
     uint32_t input_num = 1;
     vsi_status status = VSI_FAILURE;
 
@@ -323,6 +323,10 @@ int main
     const char *data_name_v1se = NULL;
     const char *data_name_v2 = NULL;
 
+    vsi_nn_tensor_t* output_tensor_v1se = NULL;
+    vsi_nn_tensor_t* output_tensor_v2 = NULL;
+    vsi_size_t out_size = 0;
+
     if(argc < 3)
     {
         printf("Usage: %s data_file_v1se [data_file_v2] inputs...\n", argv[0]);
@@ -332,14 +336,7 @@ int main
 
     data_name_v1se = (const char *)argv[1];
     
-    // Check if V2 model file is provided or use default
-    if(argc >= 4 && strstr(argv[2], ".nb")) {
-        data_name_v2 = (const char *)argv[2];
-        printf("Using V2 model: %s\n", data_name_v2);
-    } else {
-        data_name_v2 = "minifasnetv2.nb"; // Default V2 model file
-        printf("Using default V2 model: %s\n", data_name_v2);
-    }
+    data_name_v2 = (const char *)argv[2];
 
     #define MAX_BBOX 16
     int bbox_count = (argc - 3) / 4;
@@ -391,8 +388,8 @@ int main
     if(VNN_APP_DEBUG)
     {
         /* Dump all node outputs */
-        vsi_nn_DumpGraphNodeOutputs(graph_v1se, "./network_dump_v1se", NULL, 0, TRUE, 0);
-        vsi_nn_DumpGraphNodeOutputs(graph_v2, "./network_dump_v2", NULL, 0, TRUE, 0);
+        vsi_nn_DumpGraphNodeOutputs(graph_v1se, "./network_dump_v1se", NULL, 0, TRUE, VSI_NN_DIM_FMT_AUTO);
+        vsi_nn_DumpGraphNodeOutputs(graph_v2, "./network_dump_v2", NULL, 0, TRUE, VSI_NN_DIM_FMT_AUTO);
     }
 
     /* Ensemble post processing */
@@ -401,9 +398,9 @@ int main
     TEST_CHECK_STATUS( status, final );
 
     // Get ensemble output tensor for further use
-    vsi_nn_tensor_t* output_tensor_v1se = vsi_nn_GetTensor(graph_v1se, graph_v1se->output.tensors[0]);
-    vsi_nn_tensor_t* output_tensor_v2 = vsi_nn_GetTensor(graph_v2, graph_v2->output.tensors[0]);
-    vsi_size_t out_size = 0;
+    output_tensor_v1se = vsi_nn_GetTensor(graph_v1se, graph_v1se->output.tensors[0]);
+    output_tensor_v2 = vsi_nn_GetTensor(graph_v2, graph_v2->output.tensors[0]);
+    out_size = 0;
 
 final:
     if(graph_v1se) vnn_ReleaseNeuralNetwork( graph_v1se );
