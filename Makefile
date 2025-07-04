@@ -1,4 +1,3 @@
-
 # CROSS_COMPILE=""
 #CROSS_COMPILE=/home/mattlin/Desktop/works/acs/Q654/crossgcc/gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu/bin/aarch64-none-linux-gnu-
 CC=$(CROSS_COMPILE)gcc
@@ -29,7 +28,7 @@ LFLAGS+=-O3 -Wl,-rpath-link=$(VIVANTE_SDK_DIR)/drivers
 LFLAGS+=-Wl,-rpath-link=$(OPENCV_LIB)
 
 LIBS+= -L$(VIVANTE_SDK_DIR)/drivers \
- -lOpenVX -lOpenVXU -lovxlib -ljpeg -lm -lstdc++
+ -lOpenVX -lOpenVXU -lovxlib -ljpeg -lm $(shell pkg-config opencv4 --libs) -lstdc++
 
 LIBS += -lopencv_core -lopencv_imgproc -lopencv_videoio -lopencv_dnn -lopencv_objdetect -lopencv_imgcodecs -lopencv_highgui
 LIBS += -L$(OPENCV_LIB)
@@ -58,7 +57,7 @@ OBJS=$(addsuffix .o, $(basename $(SRCS)))
 all: $(BIN)
 
 $(BIN): $(OBJS)
-	$(CXX) $(CFLAGS) $(LFLAGS) $(EXTRALFLAGS) $(OBJS) $(LIBS) -o $@
+	$(CC) $(CFLAGS) $(LFLAGS) $(EXTRALFLAGS) $(OBJS) $(LIBS) -o $@
 
 clean:
 	rm -rf *.o

@@ -6,15 +6,14 @@ filegroup(
     name = "srcs",
     srcs =
         [
-        "vnn_minifasnetv2.c",
-        "vnn_minifasnetv2.h",
+        "vnn_facedetector3uint8.c",
+        "vnn_facedetector3uint8.h",
         "vnn_post_process.c",
         "vnn_post_process.h",
         "vnn_pre_process.c",
         "vnn_pre_process.h",
         "vnn_global.h",
         "main.c",
-        "Android.mk",
         ],
 )
 
